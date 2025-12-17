@@ -1,0 +1,163 @@
+# Version 1.0
+# Count gas meter rotations using a reed sensor
+# In ESPHome are some challenges with floating point operations.
+# The sprintf is a workaround operation to mitigate the floating point operation challenges. Still not perfect.
+#
+# Hardware configuration ESP8266 D1 Mini with a reed sensor connected to D5 (GPIO14)
+#
+# Generate a new api encryption key
+
+esphome:
+  name: gas-meter
+  friendly_name: Gas Meter
+  on_boot: 
+    priority: -100
+    then:
+      - sensor.template.publish:
+          id: consumption
+          state: !lambda |-
+            char buffer[30];
+            sprintf(buffer, "%d.%02d", id(total_gas_consumption) / ${pulse_factor_inv}, id(total_gas_consumption) % ${pulse_factor_inv});
+            ESP_LOGD("Gas", "Set Consumption on Boot: %i = %f${volume_unit}", id(total_gas_consumption), atof(buffer));
+            return atof(buffer);
+
+esp8266:
+  board: d1_mini
+
+preferences:
+  flash_write_interval: 10min
+
+logger:
+
+api:
+  encryption:
+    key: "XXX"
+
+ota:
+- platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+
+substitutions:
+  reed_sensor: GPIO14      # ESP8266 D1 Mini D5 (GPIO14)
+  reed_sensor_delayed_on: 150ms
+  reed_sensor_delayed_off: 700ms
+  gpio_led: GPIO2          # Onboard LED
+  max_value: 900000000     # Max value for the set value operation. It has to be divided by the pulse factor
+  volume_unit: 'm³'
+  pulse_factor: '0.01'     # 1 imp = 0.01m³ (also adjust in the sprintf statement the %d.%02d)
+  pulse_factor_inv: '100'  # Inverted pulse factor: 1 / ${pulse_factor}
+
+globals:
+  - id: total_gas_consumption
+    type: int
+    restore_value: True
+    initial_value: '0'     # Initial gas meter value
+
+binary_sensor:
+  - platform: gpio
+    id: live_pulse
+    internal: True         # True = do not expose to Homeassistant
+    pin:
+      number: ${reed_sensor}
+      mode: INPUT_PULLUP
+    name: "Live-Pulse"
+    filters:
+      - invert
+      - delayed_on: ${reed_sensor_delayed_on}
+      - delayed_off: ${reed_sensor_delayed_off}
+    on_press:               # Reed sensor closed
+      then:
+        - lambda: |-
+            id(total_gas_consumption) += 1;
+        - output.turn_on: led
+        - sensor.template.publish:
+            id: consumption
+            state: !lambda |-
+              char buffer[30];
+              sprintf(buffer, "%d.%02d", id(total_gas_consumption) / ${pulse_factor_inv}, id(total_gas_consumption) % ${pulse_factor_inv});
+              ESP_LOGD("Gas", "Pulse: %i = %f${volume_unit}", id(total_gas_consumption), atof(buffer));
+              return atof(buffer);
+        #- component.update:         # Update Set Consumption value
+          #  id: set_consumption
+    on_release:            # Reed sensor open
+      then:
+        - output.turn_off: led
+
+sensor:
+  - platform: template
+    name: "Consumption"
+    id: consumption
+    icon: "mdi:fire"
+    device_class: gas
+    state_class: "total_increasing"
+    unit_of_measurement: ${volume_unit}
+    update_interval: never
+    accuracy_decimals: 2
+    filters:
+      - round: 2
+
+number:
+  # Set Gas Meter value from Homeassistent
+  - platform: template
+    name: "Set Consumption"
+    id: set_consumption
+    icon: "mdi:meter-gas-outline"
+    mode: BOX
+    min_value: 0
+    max_value: ${max_value}
+    step: ${pulse_factor}
+    unit_of_measurement: ${volume_unit}
+    update_interval: never
+    # Read and show current value
+    #lambda: |-
+      #return id(total_gas_consumption) * ${pulse_factor};
+
+    # Write value x from Homeassistent
+    set_action:
+      - globals.set:
+          id: total_gas_consumption
+          value: !lambda 'return (int)round(x / ${pulse_factor});'
+      - sensor.template.publish:
+          id: consumption
+          state: !lambda |-
+            char buffer[30];
+            sprintf(buffer, "%d.%02d", id(total_gas_consumption) / ${pulse_factor_inv}, id(total_gas_consumption) % ${pulse_factor_inv});
+            ESP_LOGD("Gas", "Set Consumption: %i = %f${volume_unit}", id(total_gas_consumption), atof(buffer));
+            return atof(buffer);
+
+button:
+  - platform: template
+    name: "Add one Pulse"
+    id: up_counter_button
+    icon: "mdi:arrow-up-circle"
+    on_press:
+      - lambda: |-
+          id(total_gas_consumption) += 1;
+          char buffer[30];
+          sprintf(buffer, "%d.%02d", id(total_gas_consumption) / ${pulse_factor_inv}, id(total_gas_consumption) % ${pulse_factor_inv});
+          ESP_LOGD("Gas", "Add one Pulse: %i = %f${volume_unit}", id(total_gas_consumption), atof(buffer));
+          id(consumption).publish_state(atof(buffer));
+
+  - platform: template
+    name: "Remove one Pulse"
+    id: down_counter_button
+    icon: "mdi:arrow-down-circle"
+    on_press:
+      - lambda: |-
+          if (id(total_gas_consumption) > 0) {
+            id(total_gas_consumption) -= 1;
+          }
+          char buffer[30];
+          sprintf(buffer, "%d.%02d", id(total_gas_consumption) / ${pulse_factor_inv}, id(total_gas_consumption) % ${pulse_factor_inv});
+          ESP_LOGD("Gas", "Remove one Pulse: %i = %f${volume_unit}", id(total_gas_consumption), atof(buffer));
+          id(consumption).publish_state(atof(buffer));
+
+output:
+  - platform: gpio
+    pin: ${gpio_led}   # Onboard LED
+    id: 'led'
+    inverted: true
