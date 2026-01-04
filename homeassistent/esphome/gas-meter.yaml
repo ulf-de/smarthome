@@ -1,11 +1,10 @@
-# Version 1.0
+# Version 1.1
 # Count gas meter rotations using a reed sensor
 # In ESPHome are some challenges with floating point operations.
 # The sprintf is a workaround operation to mitigate the floating point operation challenges. Still not perfect.
 #
 # Hardware configuration ESP8266 D1 Mini with a reed sensor connected to D5 (GPIO14)
 #
-# Generate a new api encryption key
 
 esphome:
   name: gas-meter
@@ -81,8 +80,8 @@ binary_sensor:
               sprintf(buffer, "%d.%02d", id(total_gas_consumption) / ${pulse_factor_inv}, id(total_gas_consumption) % ${pulse_factor_inv});
               ESP_LOGD("Gas", "Pulse: %i = %f${volume_unit}", id(total_gas_consumption), atof(buffer));
               return atof(buffer);
-        #- component.update:         # Update Set Consumption value
-          #  id: set_consumption
+        - component.update:         # Update Set Consumption value and show value in Homeassistent
+            id: set_consumption
     on_release:            # Reed sensor open
       then:
         - output.turn_off: led
@@ -112,9 +111,12 @@ number:
     step: ${pulse_factor}
     unit_of_measurement: ${volume_unit}
     update_interval: never
-    # Read and show current value
-    #lambda: |-
-      #return id(total_gas_consumption) * ${pulse_factor};
+    # Show current value in Homeassistent
+    lambda: |-
+      char buffer[30];
+      sprintf(buffer, "%d.%02d", id(total_gas_consumption) / ${pulse_factor_inv}, id(total_gas_consumption) % ${pulse_factor_inv});
+      ESP_LOGD("Sending Set Consumption Value", "Pulse: %i = %f${volume_unit}", id(total_gas_consumption), atof(buffer));
+      return atof(buffer);
 
     # Write value x from Homeassistent
     set_action:
